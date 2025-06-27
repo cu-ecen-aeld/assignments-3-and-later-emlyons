@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #finder.sh
 
 if [ -z $1 ]; then
