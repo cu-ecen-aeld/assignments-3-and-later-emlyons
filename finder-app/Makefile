@@ -1,20 +1,22 @@
-# Default compiler
-cc := gcc
+# Default compiler (host compiler)
+CC := gcc
 
-# Cross-compiler target overrides cc
-CROSS_COMPILE: cc := aarch64-none-linux-gnu-gcc
+# Override CC if CROSS_COMPILE prefix is set
+ifdef CROSS_COMPILE
+CC := $(CROSS_COMPILE)gcc
+endif
 
 # Default target
 all: writer
 
-# Cross-compile target
-CROSS_COMPILE: writer
-
+# Link the executable
 writer: writer.o
-	$(cc) writer.o -o writer
+	$(CC) writer.o -o writer
 
-writer.o: clean
-	$(cc) -c writer.c -o writer.o
+# Compile the object file
+writer.o: writer.c
+	$(CC) -c writer.c -o writer.o
 
+# Clean target to remove build artifacts
 clean:
 	rm -f writer.o writer
