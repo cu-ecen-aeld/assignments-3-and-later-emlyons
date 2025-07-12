@@ -10,6 +10,11 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <signal.h>
+
+#define BUFFER_SIZE 1024
+
+#define CACHE_FILE "/var/tmp/aesdsocketdata"
 
 /*
     Create a socket based program with name aesdsocket in the “server” directory which:
@@ -30,18 +35,20 @@
 
     You may assume the length of the packet will be shorter than the available heap size.  In other words, as long as you handle malloc() associated failures with error messages you may discard associated over-length packets.
 
-    [ ]  f. Returns the full content of /var/tmp/aesdsocketdata to the client as soon as the received data packet completes.
+    [x]  f. Returns the full content of /var/tmp/aesdsocketdata to the client as soon as the received data packet completes.
 
     You may assume the total size of all packets sent (and therefore size of /var/tmp/aesdsocketdata) will be less than the size of the root filesystem, however you may not assume this total size of all packets sent will be less than the size of the available RAM for the process heap.
 
-    [ ]  g. Logs message to the syslog “Closed connection from XXX” where XXX is the IP address of the connected client.
+    [x]  g. Logs message to the syslog “Closed connection from XXX” where XXX is the IP address of the connected client.
 
-    [ ]  h. Restarts accepting connections from new clients forever in a loop until SIGINT or SIGTERM is received (see below).
+    [x]  h. Restarts accepting connections from new clients forever in a loop until SIGINT or SIGTERM is received (see below).
 
     [ ]  i. Gracefully exits when SIGINT or SIGTERM is received, completing any open connection operations, closing any open sockets, and deleting the file /var/tmp/aesdsocketdata.
 
     Logs message to the syslog “Caught signal, exiting” when SIGINT or SIGTERM is received.
 */
+
+static int RUN = 1;
 
 int _setup(const char *host, const char *port)
 {
@@ -104,19 +111,17 @@ int _setup(const char *host, const char *port)
     return sock_fd;
 }
 
-int _accept(int sock_fd)
+int _accept(int sock_fd, struct sockaddr_in* cliaddr, char ipstr[INET_ADDRSTRLEN])
 {
     int client_fd;
-    struct sockaddr_in cliaddr;
-    socklen_t cliaddrlen = sizeof(cliaddr);
-    client_fd = accept(sock_fd, (struct sockaddr*)&cliaddr, &cliaddrlen);
+    socklen_t cliaddrlen = sizeof(*cliaddr);
+    client_fd = accept(sock_fd, (struct sockaddr*)cliaddr, &cliaddrlen);
     if (client_fd == -1) {
         perror("accept()");
         return -1;
     }
-    char ipstr[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &cliaddr.sin_addr, ipstr, sizeof(ipstr));
-    syslog(LOG_USER, "Accepted connection from %s:%d", ipstr, ntohs(cliaddr.sin_port));
+    inet_ntop(AF_INET, &(cliaddr->sin_addr), ipstr, INET_ADDRSTRLEN);
+    syslog(LOG_USER, "Accepted connection from %s:%d", ipstr, ntohs(cliaddr->sin_port));
     return client_fd;
 }
 
@@ -166,12 +171,73 @@ int _cache(const char* writefile, const char* writestr, int writesize)
     }
 }
 
-int _send() {
+/* _send_cache()
+ *   Send entire cache file to client
+ * in: client_fd: file descriptor to client socket
+ * out: 0 success, -1 error
+ */
+int _send_cache(int client_fd) {
+    
+    char cache_buffer[BUFFER_SIZE];
+    int cache_fd = open(CACHE_FILE, O_RDONLY);
+    if (cache_fd == -1) {
+        perror("open()");
+        return -1;
+    }
+
+    ssize_t bytes_read;
+    while ((bytes_read = read(cache_fd, cache_buffer, sizeof(cache_buffer))) > 0) {
+
+        ssize_t total_bytes_sent = 0;
+        while (total_bytes_sent < bytes_read)
+        {
+            ssize_t bytes_sent = send(client_fd, cache_buffer + total_bytes_sent, bytes_read - total_bytes_sent, 0);
+            if (bytes_sent == -1 || bytes_sent == 0)
+            {
+                close(cache_fd);
+                perror("send()");
+                return -1;
+            }
+            total_bytes_sent += bytes_sent;
+        }
+    }
+
+    close(cache_fd);
+    if (bytes_read == -1)
+    {
+        perror("read()");
+        return -1;
+    }
     return 0;
 }
 
-int main(int argc, char *argv[])
+static void signal_handler(int signal_number)
 {
+    if (signal_number == SIGTERM)
+    {
+        RUN = 0;// shutdown
+    }
+    else if (signal_number == SIGINT)
+    {
+        RUN = 0;// shutdown
+    }
+}
+
+int main(int argc, char *argv[])
+{ 
+    struct sigaction new_action;
+    memset(&new_action, 0, sizeof(struct sigaction));
+    new_action.sa_handler = signal_handler;
+    if (sigaction(SIGTERM, &new_action, NULL) != 0)
+    {
+        perror("sigaction(SIGTERM)");
+        return -1;
+    }
+    if (sigaction(SIGINT, &new_action, NULL) != 0)
+    {
+        perror("sigaction(SIGINT)");
+        return -1;
+    }
 
     openlog(NULL, LOG_PID, LOG_USER);
     
@@ -181,28 +247,28 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    const int buffer_size = 1024;
-    char buffer[buffer_size];
-    size_t line_buffer_size = buffer_size;
+    char buffer[BUFFER_SIZE];
+    size_t line_buffer_size = BUFFER_SIZE;
     size_t used_size = 0;
-    char* line_buffer = malloc(buffer_size);
+    char* line_buffer = malloc(BUFFER_SIZE);
     if (line_buffer == NULL) {
-        perror("malloc()");
         close(sock_fd);
+        perror("malloc()");
         return -1;
     }
 
-    while(1)
+    while(RUN)
     {
 
-        // wait for client
-        int client_fd = _accept(sock_fd);
-
+        // accept new connection
+        struct sockaddr_in cliaddr;
+        char ipstr[INET_ADDRSTRLEN];
+        int client_fd = _accept(sock_fd, &cliaddr, ipstr);
 
         int connected = 1;
-        while(connected)
+        while(connected && RUN)
         {
-            int bytes_received = _receive(sock_fd, client_fd, buffer, buffer_size);
+            int bytes_received = _receive(sock_fd, client_fd, buffer, BUFFER_SIZE);
             if (bytes_received == -1) {
                 close(sock_fd);
                 perror("message()");
@@ -213,7 +279,6 @@ int main(int argc, char *argv[])
             }
 
             // append until no more data
-            const char* message_cache = "/var/tmp/aesdsocketdata";
             for (int i = 0; i < bytes_received; i++)
             {
 
@@ -225,6 +290,7 @@ int main(int argc, char *argv[])
                     char* temp = realloc(line_buffer, 2*line_buffer_size);
                     if (temp == NULL) {
                         free(line_buffer);
+                        close(client_fd);
                         close(sock_fd);
                         perror("realloc()");
                         return -1;
@@ -237,15 +303,27 @@ int main(int argc, char *argv[])
                 if (buffer[i] == '\n')
                 {
                     // flush to cache
-                    if (_cache(message_cache, line_buffer, used_size) == -1) {
+                    if (_cache(CACHE_FILE, line_buffer, used_size) == -1) {
                         free(line_buffer);
+                        close(client_fd);
                         close(sock_fd);
                         perror("cache()");
                         return -1;
                     }
 
+                    if (_send_cache(client_fd) == -1) {
+                        close(client_fd);
+                        close(sock_fd);
+                        perror("send()");
+                        return -1;
+                    }
+
                     // reset buffer
                     used_size = 0;
+                    connected = 0;
+
+                    close(client_fd);
+                    syslog(LOG_USER, "Closed connection from %s:%d", ipstr, ntohs(cliaddr.sin_port));
                 }
             }
 
@@ -253,8 +331,15 @@ int main(int argc, char *argv[])
 
     }
     // add to signal handler
+    printf("shutting down...");
     free(line_buffer);
     close(sock_fd);  // Or continue with listen(), accept(), etc.
+
+    if (remove(CACHE_FILE) == -1)
+    {
+        perror("remove()");
+        return -1;
+    }
     
     return 0;
 }
