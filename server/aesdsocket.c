@@ -16,6 +16,8 @@
 
 #define CACHE_FILE "/var/tmp/aesdsocketdata"
 
+void daemonize();
+
 /*
     Create a socket based program with name aesdsocket in the “server” directory which:
 
@@ -43,14 +45,14 @@
 
     [x]  h. Restarts accepting connections from new clients forever in a loop until SIGINT or SIGTERM is received (see below).
 
-    [ ]  i. Gracefully exits when SIGINT or SIGTERM is received, completing any open connection operations, closing any open sockets, and deleting the file /var/tmp/aesdsocketdata.
+    [x]  i. Gracefully exits when SIGINT or SIGTERM is received, completing any open connection operations, closing any open sockets, and deleting the file /var/tmp/aesdsocketdata.
 
     Logs message to the syslog “Caught signal, exiting” when SIGINT or SIGTERM is received.
 */
 
-static int RUN = 1;
+volatile sig_atomic_t RUN = 1;
 
-int _setup(const char *host, const char *port)
+int _setup(const char *host, const char *port, int daemon)
 {
     const int capacity = 1;
 
@@ -101,6 +103,11 @@ int _setup(const char *host, const char *port)
 
     printf("socket bound successfully on %s:%s\n", host, port);
     freeaddrinfo(res);
+
+    if (daemon)
+    {
+        daemonize();
+    }
 
     if (listen(sock_fd, capacity) == -1) {
         perror("listen()");
@@ -213,13 +220,70 @@ int _send_cache(int client_fd) {
 
 static void signal_handler(int signal_number)
 {
-    if (signal_number == SIGTERM)
+    if (signal_number == SIGTERM || signal_number == SIGINT)
     {
+        syslog(LOG_USER, "Caught signal, exiting");
         RUN = 0;// shutdown
     }
-    else if (signal_number == SIGINT)
-    {
-        RUN = 0;// shutdown
+}
+
+int is_daemon(int argc, char *argv[])
+{
+    int debug = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-d") == 0) {
+            debug = 1;
+            break;
+        }
+    }
+    return debug;
+}
+
+void daemonize()
+{
+    pid_t pid = fork();
+    switch (pid) {
+        case -1: // failure
+            perror("fork()");
+            exit(EXIT_FAILURE);
+
+        case 0: // child process
+            pid_t sid = setsid(); // make daemon session leader
+            if (sid == -1)
+            {
+                perror("setsid()");
+                exit(EXIT_FAILURE);
+            }
+            if (chdir("/") == -1)
+            {
+                perror("chdir()");
+                exit(EXIT_FAILURE);
+            }
+            int fd = open("/dev/null", O_RDWR); // reroute stdio to null
+            if (fd == -1)
+            {
+                perror("open()");
+                exit(EXIT_FAILURE);
+            }
+            dup2(fd, STDIN_FILENO);
+            dup2(fd, STDOUT_FILENO);
+            dup2(fd, STDERR_FILENO);
+            if (fd > 2)
+            {
+                close(fd);
+            }
+
+            pid = fork(); // double fork to prevent reaquiring terminal (remove daemon from session leader)
+            if (pid == -1) {
+                exit(EXIT_FAILURE);
+            }
+            else if (pid != 0) {
+                exit(EXIT_SUCCESS);
+            }
+            return;
+
+        default: // parent process
+            exit(EXIT_SUCCESS);
     }
 }
 
@@ -241,7 +305,8 @@ int main(int argc, char *argv[])
 
     openlog(NULL, LOG_PID, LOG_USER);
     
-    int sock_fd = _setup("localhost", "9000");
+    int daemon = is_daemon(argc, argv);
+    int sock_fd = _setup("localhost", "9000", daemon);
     if (sock_fd == -1) {
         perror("setup()");
         return -1;
