@@ -306,7 +306,7 @@ int main(int argc, char *argv[])
     openlog(NULL, LOG_PID, LOG_USER);
     
     int daemon = is_daemon(argc, argv);
-    int sock_fd = _setup("localhost", "9000", daemon);
+    int sock_fd = _setup("0.0.0.0", "9000", daemon);
     if (sock_fd == -1) {
         perror("setup()");
         return -1;
