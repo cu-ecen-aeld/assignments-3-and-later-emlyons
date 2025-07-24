@@ -1,0 +1,16 @@
+#!/bin/bash
+
+DIR="$(dirname "$0")"
+
+ACTION="$1"
+
+if [ "$ACTION" = "start" ]; then
+  echo "Starting daemon..."
+  start-stop-daemon --chdir "$DIR" --start --exec aesdsocket -- -d
+elif [ "$ACTION" = "stop" ]; then
+  echo "Stopping daemon..."
+  start-stop-daemon --stop --name aesdsocket
+else
+  echo "Usage: $0 <start/stop aesdsocket as a daemon process> {start|stop}"
+  exit 1
+fi
