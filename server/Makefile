@@ -6,17 +6,23 @@ ifdef CROSS_COMPILE
 CC := $(CROSS_COMPILE)gcc
 endif
 
+# Source files
+SRC := aesdsocket.c queue.c thread_pool.c
+
+# Object files
+OBJ := $(SRC:.c=.o)
+
 # Default target
 all: aesdsocket
 
 # Link the executable
-aesdsocket: aesdsocket.o
-	$(CC) aesdsocket.o -o aesdsocket
+aesdsocket: $(OBJ)
+	$(CC) $(OBJ) -o $@
 
-# Compile the object file
-aesdsocket.o: aesdsocket.c
-	$(CC) -c aesdsocket.c -o aesdsocket.o
+# Compile source files to object files
+%.o: %.c
+	$(CC) -c $< -o $@
 
 # Clean target to remove build artifacts
 clean:
-	rm -f aesdsocket.o aesdsocket
+	rm -f $(OBJ) aesdsocket
