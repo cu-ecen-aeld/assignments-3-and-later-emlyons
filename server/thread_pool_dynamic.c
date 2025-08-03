@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+static int _cleanup(Queue* queue);
+
 typedef struct Task
 {
     void (*task)(void*);
@@ -33,8 +35,18 @@ void* _run_task(void* arg)
         if (task->self && task->self->m_data)
         {
             pthread_t* thread_id = (pthread_t*)task->self->m_data;
-            queue_delete(task->thread_pool->m_threads, task->self);
-            queue_push_back(task->thread_pool->m_cleanup, thread_id);
+            if (queue_delete(task->thread_pool->m_threads, task->self))
+            {
+                pthread_mutex_unlock(&task->thread_pool->m_lock);
+                fprintf(stderr, "task thread failed to delete from thread queue\n");
+                pthread_exit(NULL);
+            }
+            if (queue_push_back(task->thread_pool->m_cleanup, thread_id) != 0)
+            {
+                pthread_mutex_unlock(&task->thread_pool->m_lock);
+                fprintf(stderr, "task thread failed to add to cleanup queue\n");
+                pthread_exit(NULL);
+            }
         }
         else
         {
@@ -94,28 +106,14 @@ int destroy_thread_pool(ThreadPool* thread_pool)
 
     if (thread_pool->m_threads != NULL)
     {
-        while (queue_size(thread_pool->m_threads) > 0)
-        {
-            pthread_t* thread_id;
-            queue_front(thread_pool->m_threads, (void**)&thread_id);
-            pthread_join(*thread_id, NULL);
-            queue_pop(thread_pool->m_threads);
-            free(thread_id);
-        }
+        _cleanup(thread_pool->m_threads);
         queue_destroy_queue(thread_pool->m_threads);
     }
 
     // join all threads in cleanup
     if (thread_pool->m_cleanup != NULL)
     {
-        while (queue_size(thread_pool->m_cleanup) > 0)
-        {
-            pthread_t* thread_id;
-            queue_front(thread_pool->m_cleanup, (void**)&thread_id);
-            pthread_join(*thread_id, NULL);
-            queue_pop(thread_pool->m_cleanup);
-            free(thread_id);
-        }
+        _cleanup(thread_pool->m_cleanup);
         queue_destroy_queue(thread_pool->m_cleanup);
     }
 
@@ -168,7 +166,32 @@ int dispatch(ThreadPool* thread_pool, void (*task)(void*), void* arg)
         pthread_mutex_unlock(&thread_pool->m_lock);
         RET_ERR("pthread failed to create");
     }
+
+    // clean up completed threads
+    _cleanup(thread_pool->m_cleanup);
     
     pthread_mutex_unlock(&thread_pool->m_lock);
+    return 0;
+}
+
+static int _cleanup(Queue* queue)
+{
+    while (queue_size(queue) > 0)
+    {
+        pthread_t* thread_id;
+        if (queue_front(queue, (void**)&thread_id) != 0)
+        {
+            RET_ERR("_cleanup() failed to access front()");
+        }
+        if (pthread_join(*thread_id, NULL) != 0)
+        {
+            RET_ERR("_cleanup() failed to pthread_join()");
+        }
+        if (queue_pop(queue) != 0)
+        {
+            RET_ERR("_cleanup() failed to pop()");
+        }
+        free(thread_id);
+    }
     return 0;
 }
