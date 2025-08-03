@@ -1,0 +1,1 @@
+#define RET_ERR(msg) do { fprintf(stderr, "%s\n", msg); return -1; } while (0)

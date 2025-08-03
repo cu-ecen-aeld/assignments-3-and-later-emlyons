@@ -7,7 +7,7 @@ CC := $(CROSS_COMPILE)gcc
 endif
 
 # Source files
-SRC := aesdsocket.c queue.c thread_pool.c
+SRC := aesdsocket.c queue.c thread_pool_dynamic.c
 
 # Object files
 OBJ := $(SRC:.c=.o)
