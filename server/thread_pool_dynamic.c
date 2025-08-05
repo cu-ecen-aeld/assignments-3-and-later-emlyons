@@ -3,8 +3,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-static int _cleanup(Queue* queue);
-
 typedef struct Task
 {
     void (*task)(void*);
@@ -26,7 +24,7 @@ void* _run_task(void* arg)
     { // cleanup scope
         pthread_cleanup_push(free, task);
         task->task(task->arg);
-        pthread_cleanup_pop(1);
+        pthread_cleanup_pop(0);
     }
 
     pthread_mutex_lock(&task->thread_pool->m_lock);
@@ -38,12 +36,14 @@ void* _run_task(void* arg)
             if (queue_delete(task->thread_pool->m_threads, task->self))
             {
                 pthread_mutex_unlock(&task->thread_pool->m_lock);
+                free(task);
                 fprintf(stderr, "task thread failed to delete from thread queue\n");
                 pthread_exit(NULL);
             }
             if (queue_push_back(task->thread_pool->m_cleanup, thread_id) != 0)
             {
                 pthread_mutex_unlock(&task->thread_pool->m_lock);
+                free(task);
                 fprintf(stderr, "task thread failed to add to cleanup queue\n");
                 pthread_exit(NULL);
             }
@@ -51,16 +51,17 @@ void* _run_task(void* arg)
         else
         {
             pthread_mutex_unlock(&task->thread_pool->m_lock);
+            free(task);
             fprintf(stderr, "task thread failed to cleanup\n");
             pthread_exit(NULL);
         }
     }
     pthread_mutex_unlock(&task->thread_pool->m_lock);
-
+    free(task);
     return NULL;
 }
 
-int make_thread_pool(ThreadPool** thread_pool)
+int pool_make_thread_pool(ThreadPool** thread_pool)
 {
     *thread_pool = (ThreadPool*)malloc(sizeof(ThreadPool));
     if (*thread_pool == NULL)
@@ -93,7 +94,7 @@ int make_thread_pool(ThreadPool** thread_pool)
     return 0;
 }
 
-int destroy_thread_pool(ThreadPool* thread_pool)
+int pool_destroy_thread_pool(ThreadPool* thread_pool)
 {
     if (thread_pool == NULL)
     {
@@ -106,14 +107,13 @@ int destroy_thread_pool(ThreadPool* thread_pool)
 
     if (thread_pool->m_threads != NULL)
     {
-        _cleanup(thread_pool->m_threads);
+        pool_cleanup(thread_pool->m_threads);
         queue_destroy_queue(thread_pool->m_threads);
     }
 
-    // join all threads in cleanup
     if (thread_pool->m_cleanup != NULL)
     {
-        _cleanup(thread_pool->m_cleanup);
+        pool_cleanup(thread_pool->m_cleanup);
         queue_destroy_queue(thread_pool->m_cleanup);
     }
 
@@ -122,7 +122,7 @@ int destroy_thread_pool(ThreadPool* thread_pool)
     return 0;
 }
 
-int dispatch(ThreadPool* thread_pool, void (*task)(void*), void* arg)
+int pool_dispatch(ThreadPool* thread_pool, void (*task)(void*), void* arg)
 {
     if (thread_pool == NULL)
     {
@@ -149,8 +149,8 @@ int dispatch(ThreadPool* thread_pool, void (*task)(void*), void* arg)
     if (queue_push_back(thread_pool->m_threads, thread_id) != 0)
     {
         free(task_obj);
-        pthread_mutex_unlock(&thread_pool->m_lock);
         free(thread_id);
+        pthread_mutex_unlock(&thread_pool->m_lock);
         RET_ERR("thread queue failed to push");
     }
     task_obj->self = thread_pool->m_threads->m_tail;
@@ -168,13 +168,13 @@ int dispatch(ThreadPool* thread_pool, void (*task)(void*), void* arg)
     }
 
     // clean up completed threads
-    _cleanup(thread_pool->m_cleanup);
+    pool_cleanup(thread_pool->m_cleanup);
     
     pthread_mutex_unlock(&thread_pool->m_lock);
     return 0;
 }
 
-static int _cleanup(Queue* queue)
+int pool_cleanup(Queue* queue)
 {
     while (queue_size(queue) > 0)
     {
@@ -185,10 +185,12 @@ static int _cleanup(Queue* queue)
         }
         if (pthread_join(*thread_id, NULL) != 0)
         {
+            free(thread_id);
             RET_ERR("_cleanup() failed to pthread_join()");
         }
         if (queue_pop(queue) != 0)
         {
+            free(thread_id);
             RET_ERR("_cleanup() failed to pop()");
         }
         free(thread_id);

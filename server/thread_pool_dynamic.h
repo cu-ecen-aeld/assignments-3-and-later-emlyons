@@ -12,8 +12,9 @@ typedef struct ThreadPool
     int m_kill;
 } ThreadPool;
 
-int make_thread_pool(ThreadPool** thread_pool);
-int destroy_thread_pool(ThreadPool* thread_pool);
-int dispatch(ThreadPool* thread_pool, void (*task)(void*), void* arg);
+int pool_make_thread_pool(ThreadPool** thread_pool);
+int pool_destroy_thread_pool(ThreadPool* thread_pool);
+int pool_dispatch(ThreadPool* thread_pool, void (*task)(void*), void* arg);
+int pool_cleanup(Queue* queue);
 
 #endif // THREAD_POOL_H

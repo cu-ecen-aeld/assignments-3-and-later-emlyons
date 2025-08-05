@@ -11,6 +11,8 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #include <signal.h>
+#include <time.h>
+#include "thread_pool_dynamic.h"
 
 #define BUFFER_SIZE 1024
 
@@ -51,6 +53,7 @@ void daemonize();
 */
 
 volatile sig_atomic_t RUN = 1;
+static pthread_mutex_t file_lock;
 
 int _setup(const char *host, const char *port, int daemon)
 {
@@ -287,6 +290,119 @@ void daemonize()
     }
 }
 
+typedef struct ClientTaskParams
+{
+    struct sockaddr_in cliaddr;
+    char ipstr[INET_ADDRSTRLEN];
+    int client_fd;
+    int sock_fd;
+} ClientTaskParams;
+
+void client_task(void* params)
+{
+    ClientTaskParams* p = (ClientTaskParams*)params;
+    char buffer[BUFFER_SIZE];
+    size_t line_buffer_size = BUFFER_SIZE;
+    size_t used_size = 0;
+    char* line_buffer = malloc(BUFFER_SIZE);
+    if (line_buffer == NULL) {
+        free(p);
+        perror("malloc()");
+        return;
+    }
+
+    int connected = 1;
+    while(connected && RUN)
+    {
+        int bytes_received = _receive(p->sock_fd, p->client_fd, buffer, BUFFER_SIZE);
+        if (bytes_received == -1) {
+            close(p->client_fd);
+            free(p);
+            perror("_receive()");
+            return;
+        }
+        else if (bytes_received == 0) {
+            connected = 0;
+        }
+
+        // append until no more data
+        for (int i = 0; i < bytes_received; i++)
+        {
+
+            size_t remaining_size = line_buffer_size - used_size;
+            if (remaining_size == 0)
+            {
+                // grow size if not enough room
+                // table doubling
+                char* temp = realloc(line_buffer, 2*line_buffer_size);
+                if (temp == NULL) {
+                    free(line_buffer);
+                    close(p->client_fd);
+                    free(p);
+                    perror("realloc()");
+                    return;
+                }
+                line_buffer = temp;
+                line_buffer_size = 2*line_buffer_size;
+            }
+
+            *(line_buffer + used_size++) = buffer[i];
+            if (buffer[i] == '\n')
+            {
+                pthread_mutex_lock(&file_lock);
+                
+                // flush to cache
+                if (_cache(CACHE_FILE, line_buffer, used_size) == -1) {
+                    free(line_buffer);
+                    close(p->client_fd);
+                    free(p);
+                    perror("cache()");
+                    pthread_mutex_unlock(&file_lock);
+                    return;
+                }
+
+                if (_send_cache(p->client_fd) == -1) {
+                    free(line_buffer);
+                    close(p->client_fd);
+                    free(p);
+                    perror("send()");
+                    pthread_mutex_unlock(&file_lock);
+                    return;
+                }
+
+                pthread_mutex_unlock(&file_lock);
+                // reset buffer
+                used_size = 0;
+                connected = 0;
+                break;
+            }
+        }
+    }
+    free(line_buffer);
+    close(p->client_fd);
+    syslog(LOG_USER, "Closed connection from %s:%d", p->ipstr, ntohs(p->cliaddr.sin_port));
+    free(p);
+}
+
+void timestamp_task(void* arg)
+{
+    while (RUN)
+    {
+        sleep(10);
+        time_t rawtime;
+        struct tm* timeinfo;
+        time(&rawtime);
+        timeinfo = localtime(&rawtime);
+        char buffer[20];
+        strftime(buffer, sizeof(buffer), "%Y:%m:%d:%H:%M:%S", timeinfo);
+        char timestamp[31];
+        snprintf(timestamp, sizeof(timestamp), "timestamp:%s\n", buffer);
+        pthread_mutex_lock(&file_lock);
+        _cache(CACHE_FILE, timestamp, sizeof(timestamp));
+        pthread_mutex_unlock(&file_lock);
+    }
+}
+
 int main(int argc, char *argv[])
 { 
     struct sigaction new_action;
@@ -312,94 +428,35 @@ int main(int argc, char *argv[])
         return -1;
     }
 
-    char buffer[BUFFER_SIZE];
-    size_t line_buffer_size = BUFFER_SIZE;
-    size_t used_size = 0;
-    char* line_buffer = malloc(BUFFER_SIZE);
-    if (line_buffer == NULL) {
+    ThreadPool* thread_pool;
+    if (pool_make_thread_pool(&thread_pool) != 0)
+    {
         close(sock_fd);
-        perror("malloc()");
+        perror("make_thread_pool()");
         return -1;
     }
+
+    pthread_mutex_init(&file_lock, NULL);
+
+    pool_dispatch(thread_pool, timestamp_task, NULL);
 
     while(RUN)
     {
 
         // accept new connection
+        ClientTaskParams* client_params = (ClientTaskParams*)malloc(sizeof(ClientTaskParams));
         struct sockaddr_in cliaddr;
         char ipstr[INET_ADDRSTRLEN];
-        int client_fd = _accept(sock_fd, &cliaddr, ipstr);
-
-        int connected = 1;
-        while(connected && RUN)
+        client_params->client_fd = _accept(sock_fd, &client_params->cliaddr, client_params->ipstr);
+        if (client_params->client_fd >= 0)
         {
-            int bytes_received = _receive(sock_fd, client_fd, buffer, BUFFER_SIZE);
-            if (bytes_received == -1) {
-                close(sock_fd);
-                perror("message()");
-                return -1;
-            }
-            else if (bytes_received == 0) {
-                connected = 0;
-            }
-
-            // append until no more data
-            for (int i = 0; i < bytes_received; i++)
-            {
-
-                size_t remaining_size = line_buffer_size - used_size;
-                if (remaining_size == 0)
-                {
-                    // grow size if not enough room
-                    // table doubling
-                    char* temp = realloc(line_buffer, 2*line_buffer_size);
-                    if (temp == NULL) {
-                        free(line_buffer);
-                        close(client_fd);
-                        close(sock_fd);
-                        perror("realloc()");
-                        return -1;
-                    }
-                    line_buffer = temp;
-                    line_buffer_size = 2*line_buffer_size;
-                }
-
-                *(line_buffer + used_size++) = buffer[i];
-                if (buffer[i] == '\n')
-                {
-                    // flush to cache
-                    if (_cache(CACHE_FILE, line_buffer, used_size) == -1) {
-                        free(line_buffer);
-                        close(client_fd);
-                        close(sock_fd);
-                        perror("cache()");
-                        return -1;
-                    }
-
-                    if (_send_cache(client_fd) == -1) {
-                        close(client_fd);
-                        close(sock_fd);
-                        perror("send()");
-                        return -1;
-                    }
-
-                    // reset buffer
-                    used_size = 0;
-                    connected = 0;
-
-                    close(client_fd);
-                    syslog(LOG_USER, "Closed connection from %s:%d", ipstr, ntohs(cliaddr.sin_port));
-                }
-            }
-
+            pool_dispatch(thread_pool, client_task, (void*)client_params);
         }
-
     }
     // add to signal handler
     printf("shutting down...");
-    free(line_buffer);
     close(sock_fd);  // Or continue with listen(), accept(), etc.
-
+    pthread_mutex_destroy(&file_lock);
     if (remove(CACHE_FILE) == -1)
     {
         perror("remove()");
