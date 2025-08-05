@@ -386,9 +386,14 @@ void client_task(void* params)
 
 void timestamp_task(void* arg)
 {
+    ThreadPool* thread_pool = (ThreadPool*)arg;
     while (RUN)
     {
         sleep(10);
+        if (!RUN)
+        {
+            break;
+        }
         time_t rawtime;
         struct tm* timeinfo;
         time(&rawtime);
@@ -400,6 +405,10 @@ void timestamp_task(void* arg)
         pthread_mutex_lock(&file_lock);
         _cache(CACHE_FILE, timestamp, sizeof(timestamp));
         pthread_mutex_unlock(&file_lock);
+
+        pthread_mutex_lock(&thread_pool->m_lock);
+        pool_cleanup(thread_pool->m_cleanup);
+        pthread_mutex_unlock(&thread_pool->m_lock);
     }
 }
 
@@ -438,7 +447,7 @@ int main(int argc, char *argv[])
 
     pthread_mutex_init(&file_lock, NULL);
 
-    pool_dispatch(thread_pool, timestamp_task, NULL);
+    pool_dispatch(thread_pool, timestamp_task, thread_pool);
 
     while(RUN)
     {
