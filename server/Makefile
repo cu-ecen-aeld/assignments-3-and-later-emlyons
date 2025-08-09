@@ -18,7 +18,7 @@ all: aesdsocket
 
 # Link the executable
 aesdsocket: $(OBJ)
-	$(CC) $(CFLAGS) $(OBJ) -o $@
+	$(CC) $(CFLAGS) $(OBJ) $(LDFLAGS) -o $@
 
 # Compile source files to object files
 %.o: %.c
