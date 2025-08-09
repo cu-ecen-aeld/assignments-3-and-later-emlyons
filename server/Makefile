@@ -1,5 +1,6 @@
 # Default compiler (host compiler)
-CC := gcc -g -O0
+CC ?= gcc 
+CFLAGS ?=-g -O0
 
 # Override CC if CROSS_COMPILE prefix is set
 ifdef CROSS_COMPILE
@@ -17,11 +18,11 @@ all: aesdsocket
 
 # Link the executable
 aesdsocket: $(OBJ)
-	$(CC) $(OBJ) -o $@
+	$(CC) $(CFLAGS) $(OBJ) -o $@
 
 # Compile source files to object files
 %.o: %.c
-	$(CC) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # Clean target to remove build artifacts
 clean:
