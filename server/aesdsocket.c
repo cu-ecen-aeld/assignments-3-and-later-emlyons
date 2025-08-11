@@ -402,13 +402,16 @@ void timestamp_task(void* arg)
         strftime(buffer, sizeof(buffer), "%Y:%m:%d:%H:%M:%S", timeinfo);
         char timestamp[31];
         snprintf(timestamp, sizeof(timestamp), "timestamp:%s\n", buffer);
-        // pthread_mutex_lock(&file_lock);
-        // _cache(CACHE_FILE, timestamp, sizeof(timestamp));
-        // pthread_mutex_unlock(&file_lock);
 
         pthread_mutex_lock(&thread_pool->m_lock);
         pool_cleanup(thread_pool->m_cleanup);
         pthread_mutex_unlock(&thread_pool->m_lock);
+
+        pthread_mutex_lock(&file_lock);
+        if (queue_size(thread_pool->m_threads) > 0) {
+            _cache(CACHE_FILE, timestamp, sizeof(timestamp));
+        }
+        pthread_mutex_unlock(&file_lock);
     }
 }
 
