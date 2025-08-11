@@ -135,7 +135,7 @@ int _accept(int sock_fd, struct sockaddr_in* cliaddr, char ipstr[INET_ADDRSTRLEN
     return client_fd;
 }
 
-int _receive(int sock_fd, int client_fd, char* buffer, int size) {
+int _receive(int client_fd, char* buffer, int size) {
     int bytes_received = recv(client_fd, buffer, size-1, 0);
     if (bytes_received == -1) {
         perror("recv()");
@@ -172,6 +172,11 @@ int _cache(const char* writefile, const char* writestr, int writesize)
     {
         printf("%d: %.*s\n", writesize, writesize, writestr);
         syslog(LOG_DEBUG, "wrote %d bytes to %s\n", bytes, writefile);
+    }
+
+    if (fsync(file_descriptor) < 0)
+    {
+        syslog(LOG_ERR, "failed to fsync. %s may not be up to date\n", writefile);
     }
 
     if (close(file_descriptor) == -1)
@@ -314,7 +319,7 @@ void client_task(void* params)
     int connected = 1;
     while(connected && RUN)
     {
-        int bytes_received = _receive(p->sock_fd, p->client_fd, buffer, BUFFER_SIZE);
+        int bytes_received = _receive(p->client_fd, buffer, BUFFER_SIZE);
         if (bytes_received == -1) {
             close(p->client_fd);
             free(p);
@@ -408,9 +413,7 @@ void timestamp_task(void* arg)
         pthread_mutex_unlock(&thread_pool->m_lock);
 
         pthread_mutex_lock(&file_lock);
-        if (queue_size(thread_pool->m_threads) > 0) {
-            _cache(CACHE_FILE, timestamp, sizeof(timestamp));
-        }
+        _cache(CACHE_FILE, timestamp, sizeof(timestamp));
         pthread_mutex_unlock(&file_lock);
     }
 }
